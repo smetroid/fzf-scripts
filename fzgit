@@ -54,6 +54,7 @@ fzf() { # {{{
 declare -A git_cmds_descriptions=( # {{{
   ['add']='Add file contents to the index'
   ['am']='Apply a series of patches from a mailbox'
+  ['amend']='Add to the previous commit'
   ['annotate']='Annotate file lines with commit information'
   ['apply']='Apply a patch to files and/or to the index'
   ['archive']='Create an archive of files from a named tree'
@@ -193,7 +194,21 @@ declare -A implemented_git_cmds=(
   ['commit']='git commit -v'
   ['push']='git push'
   ['log']='git_log'
+  ['amend']='git_amend'
+  ['status']='git_status'
+  ['branch']='git_branch'
 )
+
+#git_amend(){}
+
+#git_branch(){}
+
+git_status() { #{{{
+  local status="git status"
+  fzf --prompt='status' -e --no-sort --tiebreak=index --bind="enter:execute:$status | less -R" --preview="$status"
+}
+#}}}
+
 
 git_log() { # {{{
   local show="git show --color=always \"\$(grep -m1 -o \"[a-f0-9]\{7\}\" <<< {})\""
