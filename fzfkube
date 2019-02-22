@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+
+# /usr/share/bash-completion/completions/git
+# https://github.com/junegunn/fzf/wiki/examples#git
+
+# declare BOLD=$(tput bold || tput md)
+declare c_reset=$(tput sgr0)
+declare c_green=$(tput setaf 2 || tput AF 2)
+declare c_red=$(tput setaf 1 || tput AF 1)
+
+has() { # {{{
+  command -v "$1" &> /dev/null
+}
+# }}}
+
+ask() { # {{{
+  read -r -n1 -p "$* " ans
+  echo
+  [[ ${ans^} == Y* ]]
+}
+# }}}
+
+err() { # {{{
+    printf "${c_red}%s${c_reset}" "$*" >&2
+}
+# }}}
+
+die() { # {{{
+  [[ -n "$1" ]] && err "$1"
+  exit 1
+}
+# }}}
+
+has fzf || die 'fzf not found'
+# [[ -d "$PWD/.git" ]] || die 'not a git repo'
+
+fzf() { # {{{
+  local prompt
+  if [[ $1 == --prompt=* ]]; then
+    prompt="${1##*=}>"
+    shift
+  fi
+  namespace=$(kubectl config view | grep namespace: | tr -d ' '| cut -d ":" -f 2)
+  cluster="test"
+  opts=( +s -e -i --reverse --cycle --prompt="kubectl>cls:${cluster}:ns:${namespace}>${prompt} " )
+  [[ -v FZMP_FZF_OPTIONS ]] && opts=( $FZMP_FZF_OPTIONS )
+  command fzf "${opts[@]}" \
+    --inline-info \
+    --ansi \
+    --no-clear \
+    "$@"
+}
+# }}}
+
+declare -A kubectl_cmds_descriptions=( # {{{
+  ['namespaces']='Change or create new namespaces'
+  ['clusters']='Change clusters'
+  ['nodes']='Get list of nodes'
+  ['pods']='Get list of pods'
+  ['logs']='Get pod logs'
+  ['clusters']='Select a different cluster'
+)
+# }}}
+
+declare -A implemented_kubectl_cmds=(
+  ['namespaces']='kubectl_namespaces'
+  ['clusters']='kubectl_clusters'
+  ['nodes']='kubectl_get_nodes'
+  ['pods']='kubectl_get_pods'
+  ['logs']='kubectl_get_logs'
+)
+
+kubectl_namespaces() { # {{{
+  local list response header key namespace
+  list=$(kubectl get namespaces) || return 1
+    mapfile -t response < <(fzf --prompt='namespaces' \
+    --header="$header" --expect=ctrl-x <<< "$list")
+  key="${response[0]}"
+  namespace=$(echo ${response[1]} | tr -s " " | cut -d " " -f1)
+  #fzf --prompt="ns:${namespace}" <<< pick_cmd
+  kubectl config set-context $(kubectl config current-context) --namespace=${namespace} || return 1
+}
+# }}}
+
+kubectl_clusters() { # {{{
+  local list response header key namespace
+  list=$(kubectl get namespaces) || return 1
+    mapfile -t response < <(fzf --prompt='namespaces' \
+    --header="$header" --expect=ctrl-x <<< "$list")
+  key="${response[0]}"
+  namespace=$(echo ${response[1]} | tr -s " " | cut -d " " -f1)
+  fzf --prompt="cls:${cluster}>"
+  kubectl config set-context $(kubectl config current-context) --namespace=${namespace} || return 1
+
+}
+# }}}
+
+git_checkout() { # {{{
+  local list response key branch header
+  list=$(git branch --all --color -vv) || return 1
+    mapfile -t response < <(fzf --prompt='checkout' \
+    --header="$header" --expect=ctrl-x <<< "$list")
+  key="${response[0]}"
+  branch=$(perl -pe 's/^\*?\s*(remotes\/[^\/]*\/)?([^ ]+).*/\2/' <<< "${response[1]}")
+  git checkout "$branch" || return 1
+}
+# }}}
+
+pick_cmd() {
+  for c in "${!implemented_kubectl_cmds[@]}"; do
+    printf '%s%-15s%s -- %s\n' "${c_green}" "$c" "${c_reset}" "${kubectl_cmds_descriptions[$c]}"
+  done | fzf | awk '{print $1}'
+}
+
+main() {
+  local pick
+  while pick=$(pick_cmd); do
+    if [[ -n $pick ]] && has "${implemented_kubectl_cmds[${pick%% *}]}"; then
+      ${implemented_kubectl_cmds[$pick]}
+    else
+      break
+    fi
+  done
+}
+
+reset_screen() {
+  tput rmcup
+}
+
+finish() {
+  reset_screen
+}
+
+trap finish EXIT SIGINT SIGTERM
+main
