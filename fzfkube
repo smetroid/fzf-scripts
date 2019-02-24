@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+set -x
+set -e
+set -o pipefail
 
 # /usr/share/bash-completion/completions/git
 # https://github.com/junegunn/fzf/wiki/examples#git
@@ -7,6 +10,11 @@
 declare c_reset=$(tput sgr0)
 declare c_green=$(tput setaf 2 || tput AF 2)
 declare c_red=$(tput setaf 1 || tput AF 1)
+declare NAMESPACE="kube-system"
+declare PROMPT=""
+declare PICKOPTIONS="pick_cmd"
+declare CLUSTER="NONE"
+declare LEVEL=0
 
 has() { # {{{
   command -v "$1" &> /dev/null
@@ -38,11 +46,12 @@ fzf() { # {{{
   local prompt
   if [[ $1 == --prompt=* ]]; then
     prompt="${1##*=}>"
+    PROMPT="${1##*=}>"
     shift
   fi
-  namespace=$(kubectl config view | grep namespace: | tr -d ' '| cut -d ":" -f 2)
-  cluster="test"
-  opts=( +s -e -i --reverse --cycle --prompt="kubectl>cls:${cluster}:ns:${namespace}>${prompt} " )
+  # Set default namespace
+  #opts=( +s -e -i --reverse --cycle --prompt="kubectl>-c:${cluster}:-n:${namespace}>${prompt} " )
+  opts=( +s -e -i --reverse --cycle --prompt="kubectl>clstr:${CLUSTER}:ns:${NAMESPACE}>${PROMPT} " )
   [[ -v FZMP_FZF_OPTIONS ]] && opts=( $FZMP_FZF_OPTIONS )
   command fzf "${opts[@]}" \
     --inline-info \
@@ -62,23 +71,64 @@ declare -A kubectl_cmds_descriptions=( # {{{
 )
 # }}}
 
-declare -A implemented_kubectl_cmds=(
+declare -A implemented_kubectl_cmds=( # {{{
   ['namespaces']='kubectl_namespaces'
   ['clusters']='kubectl_clusters'
   ['nodes']='kubectl_get_nodes'
   ['pods']='kubectl_get_pods'
   ['logs']='kubectl_get_logs'
 )
+#}}}
+
+declare -A pod_option_descriptions=( # {{{
+	['describe']='Show details of a specific resource or group of resources'
+  ['logs']='Print the logs for a container in a pod'
+  ['attach']='Attach to a running container'
+  ['exec']='Execute a command in a container'
+  ['port-forward']='Forward one or more local ports to a pod'
+  ['proxy']='Run a proxy to the Kubernetes API server'
+  ['cp']='Copy files and directories to and from containers.'
+  ['auth']='Inspect authorization'
+)
+# }}}
+
+declare -A pod_options_cmds=( # {{{
+  ['logs']='kubectl_get_pod_logs'
+  ['describe']='kubectl_describe_pod'
+  ['exec']='kubectl_exec_pod'
+  ['auth']='kubectl_auth_pod'
+)
+#}}}
+
+
+kubectl_get_pod_logs() { # {{{
+ local list
+}
+# }}}
+
+kubectl_get_pods() { # {{{
+  local list response key
+  list=$(kubectl -n ${NAMESPACE} get pods)
+    mapfile -t response < <(fzf --prompt='pods' \
+    --header="$header" --expect=ctrl-x <<< "$list")
+  key="${response[0]}"
+  pod=$(echo ${response[1]} | tr -s " " | cut -d " " -f1)
+  PROMPT=$PROMPT"pods>$pod>"
+	PICKOPTIONS="pod_options"
+  LEVEL=$(($LEVEL + 1))
+}
+# }}}
 
 kubectl_namespaces() { # {{{
-  local list response header key namespace
+  local list response header key
   list=$(kubectl get namespaces) || return 1
     mapfile -t response < <(fzf --prompt='namespaces' \
     --header="$header" --expect=ctrl-x <<< "$list")
   key="${response[0]}"
-  namespace=$(echo ${response[1]} | tr -s " " | cut -d " " -f1)
+  NAMESPACE=$(echo ${response[1]} | tr -s " " | cut -d " " -f1)
   #fzf --prompt="ns:${namespace}" <<< pick_cmd
-  kubectl config set-context $(kubectl config current-context) --namespace=${namespace} || return 1
+  #kubectl config set-context $(kubectl config current-context) --namespace=${namespace} || return 1
+  #kubectl config set-context $(kubectl config current-context) --namespace=${namespace} || return 1
 }
 # }}}
 
@@ -110,17 +160,35 @@ pick_cmd() {
   for c in "${!implemented_kubectl_cmds[@]}"; do
     printf '%s%-15s%s -- %s\n' "${c_green}" "$c" "${c_reset}" "${kubectl_cmds_descriptions[$c]}"
   done | fzf | awk '{print $1}'
+  trap 'exit 0' EXIT
+}
+
+pod_options() {
+  for c in "${!pod_options_cmds[@]}"; do
+    printf '%s%-15s%s -- %s\n' "${c_green}" "$c" "${c_reset}" "${pod_option_descriptions[$c]}"
+  done | fzf | awk '{print $1}'
+  trap 'exit 0' EXIT
 }
 
 main() {
   local pick
-  while pick=$(pick_cmd); do
+  while pick=$(${PICKOPTIONS}); do
+    echo "last exit code ${?}"
+    echo "Pick: ${pick}"
     if [[ -n $pick ]] && has "${implemented_kubectl_cmds[${pick%% *}]}"; then
       ${implemented_kubectl_cmds[$pick]}
-    else
-      break
+    elif [[ -n $pick ]] && has "${pod_options_cmds[${pick%% *}]}"; then
+      ${pod_options_cmds[$pick]}
+    elif (( $? == 1 && $LEVEL >= 0 )); then
+      # Change the level so that we can exit the script .. eventually
+      LEVEL=$(($LEVEL - 1))
+      continue
+		else
+      echo "exiting"
+			break
     fi
   done
+  #finish
 }
 
 reset_screen() {
