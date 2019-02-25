@@ -12,9 +12,12 @@ declare c_green=$(tput setaf 2 || tput AF 2)
 declare c_red=$(tput setaf 1 || tput AF 1)
 declare NAMESPACE="kube-system"
 declare PROMPT=""
-declare PICKOPTIONS="pick_cmd"
 declare CLUSTER="NONE"
 declare LEVEL=0
+declare -a LASTFUNCTION[0]=""
+declare -a PROMPT_CRUM[0]=""
+declare SELECTION_OPTIONS=""
+declare POD=""
 
 has() { # {{{
   command -v "$1" &> /dev/null
@@ -68,19 +71,6 @@ declare -A kubectl_cmds_descriptions=( # {{{
   ['pods']='Get list of pods'
   ['logs']='Get pod logs'
   ['clusters']='Select a different cluster'
-)
-# }}}
-
-declare -A implemented_kubectl_cmds=( # {{{
-  ['namespaces']='kubectl_namespaces'
-  ['clusters']='kubectl_clusters'
-  ['nodes']='kubectl_get_nodes'
-  ['pods']='kubectl_get_pods'
-  ['logs']='kubectl_get_logs'
-)
-#}}}
-
-declare -A pod_option_descriptions=( # {{{
 	['describe']='Show details of a specific resource or group of resources'
   ['logs']='Print the logs for a container in a pod'
   ['attach']='Attach to a running container'
@@ -92,7 +82,12 @@ declare -A pod_option_descriptions=( # {{{
 )
 # }}}
 
-declare -A pod_options_cmds=( # {{{
+declare -A implemented_kubectl_cmds=( # {{{
+  ['namespaces']='kubectl_namespaces'
+  ['clusters']='kubectl_clusters'
+  ['nodes']='kubectl_get_nodes'
+  ['pods']='kubectl_get_pods'
+  ['logs']='kubectl_get_logs'
   ['logs']='kubectl_get_pod_logs'
   ['describe']='kubectl_describe_pod'
   ['exec']='kubectl_exec_pod'
@@ -100,11 +95,13 @@ declare -A pod_options_cmds=( # {{{
 )
 #}}}
 
-
-kubectl_get_pod_logs() { # {{{
- local list
-}
-# }}}
+declare -A pod_kubectl_cmds=( # {{{
+  ['logs']='kubectl_get_pod_logs'
+  ['describe']='kubectl_describe_pod'
+  ['exec']='kubectl_exec_pod'
+  ['auth']='kubectl_auth_pod'
+)
+#}}}
 
 kubectl_get_pods() { # {{{
   local list response key
@@ -112,12 +109,29 @@ kubectl_get_pods() { # {{{
     mapfile -t response < <(fzf --prompt='pods' \
     --header="$header" --expect=ctrl-x <<< "$list")
   key="${response[0]}"
-  pod=$(echo ${response[1]} | tr -s " " | cut -d " " -f1)
-  PROMPT=$PROMPT"pods>$pod>"
-	PICKOPTIONS="pod_options"
+  POD=$(echo ${response[1]} | tr -s " " | cut -d " " -f1)
+  #PROMPT=$PROMPT"pods>$pod>"
+  PROMPT="pods>${POD}>"
+  SELECTION_OPTIONS="pod_options"
   LEVEL=$(($LEVEL + 1))
+  LASTFUNCTION[$LEVEL]=PICK
+  PROMPT_CRUM[$LEVEL]=$PROMPT
 }
 # }}}
+
+kubectl_get_nodes() { # {{{
+  local list response key
+  list=$(kubectl -n ${NAMESPACE} get nodes)
+    mapfile -t response < <(fzf --prompt='nodes' \
+    --header="$header" --expect=ctrl-x <<< "$list")
+  key="${response[0]}"
+  NODE=$(echo ${response[1]} | tr -s " " | cut -d " " -f1)
+  #PROMPT=$PROMPT"pods>$pod>"
+  PROMPT="nodes>$NODE>"
+  SELECTION_OPTIONS="node_options"
+  LEVEL=$(($LEVEL + 1))
+  LASTFUNCTION[$LEVEL]=PICK
+}
 
 kubectl_namespaces() { # {{{
   local list response header key
@@ -145,49 +159,78 @@ kubectl_clusters() { # {{{
 }
 # }}}
 
-git_checkout() { # {{{
-  local list response key branch header
-  list=$(git branch --all --color -vv) || return 1
-    mapfile -t response < <(fzf --prompt='checkout' \
+kubectl_get_pod_logs() {
+  local show="kubectl -n $NAMESPACE logs $POD <<< {}"
+  #fzf --prompt="$PROMPT>log" -e --no-sort --tiebreak=index --bind="enter:execute:cat $show | less -R" --preview="$show" < <(kubectl -n $NAMESPACE log $POD)
+  #fzf --prompt="$PROMPT>log" -e --no-sort --tiebreak=index --bind="enter:execute:$show" --preview="cat $show" < <(kubectl -n $NAMESPACE log $POD)
+  #LEVEL=$(($LEVEL + 1))
+  #PROMPT_CRUM[$LEVEL]="log"
+  #PROMPT="${PROMPT}>log"
+  trap `fzf --prompt="${PROMPT}log" -e --no-sort --tiebreak=index < <(kubectl -n $NAMESPACE log $POD)` EXIT
+}
+
+kubectl_get_node_logs() {
+  local show="kubectl -n $NAMESPACE logs $POD <<< {}"
+  fzf --prompt=">log" -e --no-sort --tiebreak=index < <(kubectl -n $NAMESPACE log $NODE)
+}
+
+
+
+kubectl_get_logs() {
+  list=$(kubectl -n NAMESPACE logs ) || return 1
+    mapfile -t response < <(fzf --prompt='namespaces' \
     --header="$header" --expect=ctrl-x <<< "$list")
   key="${response[0]}"
-  branch=$(perl -pe 's/^\*?\s*(remotes\/[^\/]*\/)?([^ ]+).*/\2/' <<< "${response[1]}")
-  git checkout "$branch" || return 1
+  namespace=$(echo ${response[1]} | tr -s " " | cut -d " " -f1)
+  fzf --prompt="cls:${cluster}>"
+  fzf --prompt="$PROMPT>log" -e --no-sort --tiebreak=index --preview="$show" < <(kubectl -n $NAMESPACE log $POD)
 }
-# }}}
 
 pick_cmd() {
-  for c in "${!implemented_kubectl_cmds[@]}"; do
-    printf '%s%-15s%s -- %s\n' "${c_green}" "$c" "${c_reset}" "${kubectl_cmds_descriptions[$c]}"
-  done | fzf | awk '{print $1}'
-  trap 'exit 0' EXIT
-}
+  if [ -n $SELECTION_OPTIONS ];then
+    if [[ $SELECTION_OPTIONS == "pod_options" ]]; then
+      echo "selection_options = level: ${LEVEL} | exit : ${?} | pick: ${PICK} | last_function: ${LASTFUNCTION[*]} CRUM: ${PROMPT_CRUM[*]}" >> "/tmp/inside.log"
+      for c in "${!pod_kubectl_cmds[@]}"; do
+        printf '%s%-15s%s -- %s\n' "${c_green}" "$c" "${c_reset}" "${kubectl_cmds_descriptions[$c]}"
+      done | fzf | awk '{print $1}'
+    else
+      echo "selection_options else = level: ${LEVEL} | exit : ${?} pick: ${PICK} | last_function: ${LASTFUNCTION[*]} CRUM: ${PROMPT_CRUM[*]}" >> "/tmp/inside.log"
+      for c in "${!implemented_kubectl_cmds[@]}"; do
+        printf '%s%-15s%s -- %s\n' "${c_green}" "$c" "${c_reset}" "${kubectl_cmds_descriptions[$c]}"
+      done | fzf | awk '{print $1}'
+    fi
+  else
+    echo "implemented_kubectl_cmds = level: ${LEVEL} | exit : ${?} | pick: ${PICK} | last_function: ${LASTFUNCTION[*]} | CRUM: ${PROMPT_CRUM[*]}" >> "/tmp/inside.log"
+    for c in "${!implemented_kubectl_cmds[@]}"; do
+      printf '%s%-15s%s -- %s\n' "${c_green}" "$c" "${c_reset}" "${kubectl_cmds_descriptions[$c]}"
+    done | fzf | awk '{print $1}'
+  fi
 
-pod_options() {
-  for c in "${!pod_options_cmds[@]}"; do
-    printf '%s%-15s%s -- %s\n' "${c_green}" "$c" "${c_reset}" "${pod_option_descriptions[$c]}"
-  done | fzf | awk '{print $1}'
   trap 'exit 0' EXIT
 }
 
 main() {
   local pick
-  while pick=$(${PICKOPTIONS}); do
-    echo "last exit code ${?}"
-    echo "Pick: ${pick}"
+  while pick=$(pick_cmd); do
     if [[ -n $pick ]] && has "${implemented_kubectl_cmds[${pick%% *}]}"; then
       ${implemented_kubectl_cmds[$pick]}
-    elif [[ -n $pick ]] && has "${pod_options_cmds[${pick%% *}]}"; then
-      ${pod_options_cmds[$pick]}
     elif (( $? == 1 && $LEVEL >= 0 )); then
       # Change the level so that we can exit the script .. eventually
+      echo "Trapping ESC key = level: ${LEVEL} | exit : ${?} | pick: ${PICK} | last_function: ${LASTFUNCTION[*]} | CRUM: ${PROMPT_CRUM[*]}" >> "/tmp/inside.log"
       LEVEL=$(($LEVEL - 1))
-      continue
-		else
-      echo "exiting"
-			break
+      if (( $LEVEL == 0 )); then
+        SELECTION_OPTIONS=""
+        PROMP=""
+      else
+        SELECTION_OPTIONS=$LASTFUNCTION[$LEVEL]
+        PROMP=$PROMPT_CRUM[$LEVEL]
+      fi
+    else
+      echo "exiting" 2>&1 >> "/tmp/inline.log"
+      break
     fi
   done
+  echo "last exit statement $?" 2>&1 >> "/tmp/inline.log"
   #finish
 }
 
